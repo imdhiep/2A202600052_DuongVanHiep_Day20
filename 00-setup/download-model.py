@@ -43,6 +43,8 @@ TIERS: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+TEXT_ENCODING = "utf-8"
+
 
 def pick_tier(rec_model: str) -> str:
     for key in TIERS:
@@ -56,6 +58,14 @@ def find_existing(out_dir: Path, filename: str) -> Path | None:
         if p.is_file():
             return p
     return None
+
+
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding=TEXT_ENCODING))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2), encoding=TEXT_ENCODING)
 
 
 def main() -> int:
@@ -72,8 +82,13 @@ def main() -> int:
         print("ERROR: hardware.json not found. Run detect-hardware.py first.", file=sys.stderr)
         return 1
 
-    hw = json.loads(hw_path.read_text())
-    tier_key = pick_tier(hw["recommendation"]["recommended_model"])
+    hw = read_json(hw_path)
+    recommended_model = hw.get("recommendation", {}).get("recommended_model", "")
+    if not recommended_model:
+        print("ERROR: hardware.json is missing recommendation.recommended_model.", file=sys.stderr)
+        return 1
+
+    tier_key = pick_tier(recommended_model)
     repo_id, q4_file, q2_file = TIERS[tier_key]
 
     out_dir = Path("models")
@@ -106,7 +121,7 @@ def main() -> int:
         "primary_model": str(primary),
         "compare_model": str(compare),
     }
-    Path("models/active.json").write_text(json.dumps(config, indent=2))
+    write_json(Path("models/active.json"), config)
     print("\nWrote models/active.json — quickstart and bonus scripts read this.")
     return 0
 

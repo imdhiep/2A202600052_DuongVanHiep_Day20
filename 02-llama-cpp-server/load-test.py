@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import random
+from typing import Any
 
 from locust import HttpUser, between, task
 
@@ -61,15 +62,30 @@ class LlamaServerUser(HttpUser):
         ]
         self._chat(messages, max_tokens=160, name="long-rag")
 
-    def _chat(self, messages, max_tokens: int, name: str) -> None:
-        self.client.post(
+    def _chat(self, messages: list[dict[str, str]], max_tokens: int, name: str) -> None:
+        payload: dict[str, Any] = {
+            "model": "local",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.5,
+        }
+        with self.client.post(
             "/v1/chat/completions",
-            json={
-                "model": "local",
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": 0.5,
-            },
-            timeout=120,
+            json=payload,
+            timeout=120.0,
             name=name,
-        )
+            catch_response=True,
+        ) as response:
+            if response.status_code != 200:
+                response.failure(f"HTTP {response.status_code}")
+                return
+            try:
+                body = response.json()
+                content = body["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                response.failure(f"Malformed JSON response: {exc}")
+                return
+            if not content:
+                response.failure("Empty completion content")
+                return
+            response.success()

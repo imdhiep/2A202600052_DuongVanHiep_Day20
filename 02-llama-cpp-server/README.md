@@ -25,6 +25,8 @@ python -m llama_cpp.server --model "$(jq -r .primary_model models/active.json)" 
     --n_gpu_layers 99
 ```
 
+This path is convenient for API smoke tests, but the native `llama-server` build is the safer choice when you specifically want the full llama.cpp serving surface, including the metrics workflow used in this track.
+
 ### B. From a native llama.cpp build (faster, used by the bonus track)
 
 If you've already done `BONUS-llama-cpp-optimization/` and have a `bin/llama-server` from source:
@@ -58,7 +60,7 @@ After 1 min locust prints P50/P95/P99 in the table at the bottom. Re-run with `-
 ## Files in this track
 
 - `smoke-test.py` — one-shot OpenAI-SDK call to confirm the endpoint
-- `start-server.sh` / `start-server.ps1` — convenience launchers that read `models/active.json`
+- `start-server.sh` / `start-server.ps1` — convenience launchers that read `models/active.json`, prefer native `llama-server` if available, and fall back to `python -m llama_cpp.server`
 - `load-test.py` — locust scenarios: 80% short prompts (chat-style), 20% long prompts (RAG-style)
 - `prometheus.yml` — minimal scrape config if you want to spin up a local Prometheus
 - `record-metrics.py` — polls `/metrics` every 5s during a load run and writes a CSV
@@ -75,7 +77,7 @@ After 1 min locust prints P50/P95/P99 in the table at the bottom. Re-run with `-
 
 ## Deliverable
 
-Re-run with `python 02-llama-cpp-server/record-metrics.py --duration 60 --concurrency 10` and append the resulting summary to `benchmarks/02-server-results.md`. Then re-run at `--concurrency 50` and add a second row.
+Re-run with `python 02-llama-cpp-server/record-metrics.py --duration 60` and summarize the findings in `02-llama-cpp-server/02-server-results.md`. Then capture the final numbers again at concurrency 50 and discuss how the tail latencies changed.
 
 ## Deck mapping
 

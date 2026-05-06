@@ -18,28 +18,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-LLAMA_BENCH = Path("BONUS-llama-cpp-optimization/llama.cpp/build/bin/llama-bench")
-LLAMA_BENCH_EXE = LLAMA_BENCH.with_suffix(".exe")
-
 # llama-bench prints a markdown-ish table; this regex grabs the tg128 (decode) row.
 TG_RE = re.compile(r"\|\s*tg128\s*\|\s*([0-9.]+)\s*±")
+TEXT_ENCODING = "utf-8"
 
 
 def find_bench() -> Path:
-    for p in (LLAMA_BENCH, LLAMA_BENCH_EXE):
+    # Locations where llama-bench might be
+    candidates = [
+        Path("BONUS-llama-cpp-optimization/llama.cpp/build/bin/llama-bench"),
+        Path("BONUS-llama-cpp-optimization/llama.cpp/build/bin/llama-bench.exe"),
+        Path("BONUS-llama-cpp-optimization/llama.cpp/build/bin/Release/llama-bench.exe"),
+    ]
+    for p in candidates:
         if p.exists():
             return p
-    print(f"ERROR: llama-bench not found at {LLAMA_BENCH}", file=sys.stderr)
+
+    print(f"ERROR: llama-bench not found at {candidates[0]}", file=sys.stderr)
     print("       Build llama.cpp first — see BONUS-llama-cpp-optimization/01-build-from-source.md.", file=sys.stderr)
     sys.exit(1)
 
 
 def load_active() -> str:
-    return json.loads(Path("models/active.json").read_text())["primary_model"]
+    return json.loads(Path("models/active.json").read_text(encoding=TEXT_ENCODING))["primary_model"]
 
 
 def load_hw() -> dict:
-    return json.loads(Path("hardware.json").read_text())
+    return json.loads(Path("hardware.json").read_text(encoding=TEXT_ENCODING))
 
 
 def thread_grid(hw: dict) -> list[int]:
@@ -61,7 +66,14 @@ def run_one(bench: Path, model: str, threads: int, n_gpu_layers: int) -> float:
         "-r", "2",
     ]
     print(f"   running: {' '.join(cmd[1:])}")
-    out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+    out = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding=TEXT_ENCODING,
+        errors="replace",
+        check=False,
+    ).stdout
     m = TG_RE.search(out)
     if not m:
         # Fall back: scan for any decimal followed by t/s
@@ -103,8 +115,8 @@ def main() -> int:
         "drops as you go higher, that's the memory-bandwidth ceiling: extra threads "
         "fight over the same memory channels and slow each other down.\n"
     )
-    (out_dir / "bonus-thread-sweep.md").write_text(md)
-    (out_dir / "bonus-thread-sweep.json").write_text(json.dumps(rows, indent=2))
+    (out_dir / "bonus-thread-sweep.md").write_text(md, encoding=TEXT_ENCODING)
+    (out_dir / "bonus-thread-sweep.json").write_text(json.dumps(rows, indent=2), encoding=TEXT_ENCODING)
 
     print("\n" + md)
     return 0

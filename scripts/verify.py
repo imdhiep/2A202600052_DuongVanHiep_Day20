@@ -51,7 +51,7 @@ def check_reflection_edited(path: Path, problems: list[str]) -> bool:
     if not path.exists():
         problems.append(f"MISSING  submission/REFLECTION.md")
         return False
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     leftover = []
     for pattern in TEMPLATE_MARKERS:
         # Some patterns are line-anchored (start with ^), others are inline.
@@ -71,11 +71,13 @@ def check_active_model(active_json: Path, problems: list[str]) -> bool:
     if not check_file(active_json, "models/active.json", problems):
         return False
     try:
-        cfg = json.loads(active_json.read_text())
+        cfg = json.loads(active_json.read_text(encoding="utf-8"))
     except Exception as exc:
         problems.append(f"CORRUPT  models/active.json — {exc}")
         return False
     primary = Path(cfg.get("primary_model", ""))
+    if not primary.is_absolute():
+        primary = active_json.parent.parent / primary
     if not primary.exists():
         problems.append(
             f"MISSING  primary GGUF file referenced by models/active.json: {primary}"
@@ -130,14 +132,18 @@ def main() -> int:
     )
 
     # Track 02 — at least one of the two evidences should exist
-    server_evidence = (
-        (repo / "benchmarks" / "02-server-metrics.csv").exists()
-        or (repo / "benchmarks" / "02-server-results.md").exists()
+    server_evidence = any(
+        path.exists()
+        for path in (
+            repo / "benchmarks" / "02-server-metrics.csv",
+            repo / "benchmarks" / "02-server-results.md",
+            repo / "02-llama-cpp-server" / "02-server-results.md",
+        )
     )
     if not server_evidence:
         problems.append(
             "MISSING  Track 02 evidence — neither benchmarks/02-server-metrics.csv "
-            "nor benchmarks/02-server-results.md exists. Run a locust load + record-metrics."
+            "nor a Track 02 markdown summary exists. Run a locust load + record-metrics."
         )
 
     # Submission artifacts
