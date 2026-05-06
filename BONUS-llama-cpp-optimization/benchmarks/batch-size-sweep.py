@@ -20,6 +20,7 @@ from pathlib import Path
 LLAMA_BENCH = Path("BONUS-llama-cpp-optimization/llama.cpp/build/bin/llama-bench")
 LLAMA_BENCH_EXE = LLAMA_BENCH.with_suffix(".exe")
 PP_RE = re.compile(r"\|\s*pp(\d+)\s*\|\s*([0-9.]+)\s*±")
+TEXT_ENCODING = "utf-8"
 
 
 def find_bench() -> Path:
@@ -32,8 +33,8 @@ def find_bench() -> Path:
 
 def main() -> int:
     bench = find_bench()
-    model = json.loads(Path("models/active.json").read_text())["primary_model"]
-    hw = json.loads(Path("hardware.json").read_text())
+    model = json.loads(Path("models/active.json").read_text(encoding=TEXT_ENCODING))["primary_model"]
+    hw = json.loads(Path("hardware.json").read_text(encoding=TEXT_ENCODING))
     threads = hw["cpu"].get("cores_physical") or 4
     backends = hw.get("gpu", {}).get("backends", {})
     n_gpu = 99 if any(v for k, v in backends.items() if k != "cpu_only") else 0
@@ -51,7 +52,14 @@ def main() -> int:
     for b, ub in grid:
         cmd = [str(bench), "-m", model, "-t", str(threads), "-ngl", str(n_gpu),
                "-b", str(b), "-ub", str(ub), "-p", "512", "-n", "0", "-r", "2"]
-        out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+        out = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding=TEXT_ENCODING,
+            errors="replace",
+            check=False,
+        ).stdout
         m = PP_RE.search(out)
         tps = float(m.group(2)) if m else 0.0
         rows.append({"batch": b, "ubatch": ub, "pp_tok_s": tps})
@@ -70,8 +78,8 @@ def main() -> int:
     )
     out_dir = Path("benchmarks")
     out_dir.mkdir(exist_ok=True)
-    (out_dir / "bonus-batch-size-sweep.md").write_text(md)
-    (out_dir / "bonus-batch-size-sweep.json").write_text(json.dumps(rows, indent=2))
+    (out_dir / "bonus-batch-size-sweep.md").write_text(md, encoding=TEXT_ENCODING)
+    (out_dir / "bonus-batch-size-sweep.json").write_text(json.dumps(rows, indent=2), encoding=TEXT_ENCODING)
     print("\n" + md)
     return 0
 

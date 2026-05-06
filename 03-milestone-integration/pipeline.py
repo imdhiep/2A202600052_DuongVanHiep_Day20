@@ -7,17 +7,21 @@ in your real lakehouse + vector store.
 """
 from __future__ import annotations
 
+import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Iterable
 
 import httpx
 
-LLAMA_SERVER_BASE = "http://localhost:8080/v1"
+LLAMA_SERVER_BASE = os.environ.get("LLAMA_SERVER_BASE", "http://localhost:8080/v1").rstrip("/")
 SYSTEM_PROMPT = (
-    "You are a serving-engineering tutor. Answer using only the documents provided. "
-    "If the documents don't contain the answer, say so."
+    "You are a serving-engineering tutor. Answer using only the retrieved documents. "
+    "Cite the source ids you used in square brackets. If the documents do not contain "
+    "the answer, say so clearly instead of guessing."
 )
+TOKEN_RE = re.compile(r"[a-z0-9_+-]+", re.IGNORECASE)
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -40,15 +44,25 @@ class Doc:
     score: float
 
 
+def normalize_terms(text: str) -> set[str]:
+    return {token.lower() for token in TOKEN_RE.findall(text)}
+
+
 def retrieve(query: str, k: int = 3) -> list[Doc]:
     """STUB: replace with your N19 vector index call."""
     # Toy keyword overlap so the demo does *something* sensible without an embedder.
-    q_terms = {w.lower() for w in query.split() if len(w) > 3}
-    scored = [
-        Doc(d["id"], d["text"], score=len(q_terms & {w.lower() for w in d["text"].split()}))
-        for d in TOY_DOCS
-    ]
-    return sorted(scored, key=lambda d: d.score, reverse=True)[:k]
+    q_terms = normalize_terms(query)
+    scored: list[Doc] = []
+    for d in TOY_DOCS:
+        d_terms = normalize_terms(d["text"])
+        overlap = len(q_terms & d_terms)
+        phrase_bonus = 0.25 if query.lower() in d["text"].lower() else 0.0
+        score = overlap + phrase_bonus
+        scored.append(Doc(d["id"], d["text"], score=score))
+
+    ranked = sorted(scored, key=lambda doc: (-doc.score, doc.id))
+    top = [doc for doc in ranked if doc.score > 0][:k]
+    return top or ranked[:k]
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -58,7 +72,13 @@ def retrieve(query: str, k: int = 3) -> list[Doc]:
 
 def build_prompt(query: str, contexts: Iterable[Doc]) -> list[dict]:
     ctx_block = "\n".join(f"[{c.id}] {c.text}" for c in contexts)
-    user = f"Context:\n{ctx_block}\n\nQuestion: {query}"
+    user = (
+        "Retrieved context:\n"
+        f"{ctx_block}\n\n"
+        "Instruction: answer the question using only the retrieved context and include "
+        "the ids of the supporting documents.\n\n"
+        f"Question: {query}"
+    )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user},
@@ -72,14 +92,16 @@ def build_prompt(query: str, contexts: Iterable[Doc]) -> list[dict]:
 
 def call_llm(messages: list[dict]) -> tuple[str, float]:
     t0 = time.perf_counter()
-    r = httpx.post(
-        f"{LLAMA_SERVER_BASE}/chat/completions",
-        json={"model": "local", "messages": messages, "max_tokens": 200, "temperature": 0.3},
-        timeout=120.0,
-    )
-    r.raise_for_status()
+    with httpx.Client() as client:
+        r = client.post(
+            f"{LLAMA_SERVER_BASE}/chat/completions",
+            json={"model": "local", "messages": messages, "max_tokens": 200, "temperature": 0.3},
+            timeout=120.0,
+        )
+        r.raise_for_status()
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    return r.json()["choices"][0]["message"]["content"], elapsed_ms
+    body = r.json()
+    return body["choices"][0]["message"]["content"], elapsed_ms
 
 
 def answer(query: str) -> dict:
@@ -96,7 +118,7 @@ def answer(query: str) -> dict:
     return {
         "query": query,
         "answer": text,
-        "contexts": [{"id": d.id, "score": d.score} for d in docs],
+        "contexts": [{"id": d.id, "score": round(d.score, 2), "text": d.text} for d in docs],
         "timings_ms": {
             "retrieve": round(t_retrieve_ms, 1),
             "llm": round(t_llm_ms, 1),
@@ -114,7 +136,9 @@ def main() -> None:
     for q in queries:
         print(f"\n=== {q} ===")
         result = answer(q)
-        print(f"  contexts: {[c['id'] for c in result['contexts']]}")
+        print("  contexts:")
+        for context in result["contexts"]:
+            print(f"    - {context['id']} (score={context['score']:.2f}): {context['text']}")
         print(f"  timings : {result['timings_ms']}")
         print(f"  answer  : {result['answer'].strip()[:300]}")
 

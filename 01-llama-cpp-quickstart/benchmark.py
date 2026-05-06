@@ -20,6 +20,7 @@ except ImportError:
     print("ERROR: llama_cpp not installed. Run the platform setup script.", file=sys.stderr)
     sys.exit(1)
 
+TEXT_ENCODING = "utf-8"
 
 PROMPTS = [
     "Explain TTFT and TPOT in one sentence each.",
@@ -52,12 +53,12 @@ def load_active() -> dict:
     if not p.exists():
         print("ERROR: models/active.json missing. Run 00-setup/download-model.py.", file=sys.stderr)
         sys.exit(1)
-    return json.loads(p.read_text())
+    return json.loads(p.read_text(encoding=TEXT_ENCODING))
 
 
 def load_hardware() -> dict:
     p = Path("hardware.json")
-    return json.loads(p.read_text()) if p.exists() else {}
+    return json.loads(p.read_text(encoding=TEXT_ENCODING)) if p.exists() else {}
 
 
 def make_llm(model_path: str, n_threads: int, n_ctx: int, n_batch: int, n_gpu_layers: int) -> Llama:
@@ -75,7 +76,8 @@ def measure_one(llm: Llama, prompt: str, max_tokens: int, temperature: float) ->
     """Returns (ttft_ms, tpot_ms, n_tokens)."""
     start = time.perf_counter()
     first_token_at = None
-    n_tokens = 0
+    n_chunks = 0
+    generated_text = ""
     for chunk in llm.create_completion(
         prompt=prompt,
         max_tokens=max_tokens,
@@ -86,21 +88,38 @@ def measure_one(llm: Llama, prompt: str, max_tokens: int, temperature: float) ->
         if text and first_token_at is None:
             first_token_at = time.perf_counter()
         if text:
-            n_tokens += 1
+            n_chunks += 1
+            generated_text += text
     end = time.perf_counter()
 
-    if first_token_at is None or n_tokens == 0:
+    if first_token_at is None or n_chunks == 0:
         return 0.0, 0.0, 0
+
+    try:
+        n_tokens = len(llm.tokenize(generated_text.encode(TEXT_ENCODING), add_bos=False))
+    except Exception:
+        n_tokens = n_chunks
+
     ttft_ms = (first_token_at - start) * 1000.0
     decode_ms = (end - first_token_at) * 1000.0
     tpot_ms = decode_ms / max(n_tokens - 1, 1)
     return ttft_ms, tpot_ms, n_tokens
 
 
-def quantile(data: list[float], q: float) -> float:
+def percentile(data: list[float], q: float) -> float:
     if not data:
         return 0.0
-    return statistics.quantiles(sorted(data), n=100, method="inclusive")[max(0, int(q) - 1)]
+    if len(data) == 1:
+        return data[0]
+
+    ordered = sorted(data)
+    position = (len(ordered) - 1) * (q / 100.0)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
 
 
 def benchmark_model(label: str, path: str, hw: dict) -> dict:
@@ -127,7 +146,11 @@ def benchmark_model(label: str, path: str, hw: dict) -> dict:
     e2es: list[float] = []
     for i, prompt in enumerate(PROMPTS):
         t_start = time.perf_counter()
-        ttft, tpot, ntok = measure_one(llm, prompt, max_tok, temp)
+        try:
+            ttft, tpot, ntok = measure_one(llm, prompt, max_tok, temp)
+        except Exception as exc:
+            print(f"   [{i+1:2d}/{len(PROMPTS)}] ERROR: {exc}")
+            continue
         e2e = (time.perf_counter() - t_start) * 1000.0
         if ntok > 0:
             ttfts.append(ttft)
@@ -143,13 +166,13 @@ def benchmark_model(label: str, path: str, hw: dict) -> dict:
         "n_batch": n_batch,
         "n_gpu_layers": n_gpu_layers,
         "load_ms": round(load_ms, 1),
-        "ttft_ms_p50": round(quantile(ttfts, 50), 1),
-        "ttft_ms_p95": round(quantile(ttfts, 95), 1),
-        "tpot_ms_p50": round(quantile(tpots, 50), 2),
-        "tpot_ms_p95": round(quantile(tpots, 95), 2),
-        "e2e_ms_p50": round(quantile(e2es, 50), 1),
-        "e2e_ms_p95": round(quantile(e2es, 95), 1),
-        "e2e_ms_p99": round(quantile(e2es, 99), 1),
+        "ttft_ms_p50": round(percentile(ttfts, 50), 1),
+        "ttft_ms_p95": round(percentile(ttfts, 95), 1),
+        "tpot_ms_p50": round(percentile(tpots, 50), 2),
+        "tpot_ms_p95": round(percentile(tpots, 95), 2),
+        "e2e_ms_p50": round(percentile(e2es, 50), 1),
+        "e2e_ms_p95": round(percentile(e2es, 95), 1),
+        "e2e_ms_p99": round(percentile(e2es, 99), 1),
         "decode_rate_tok_s": round(1000.0 / max(statistics.median(tpots), 0.001), 1) if tpots else 0,
     }
     return summary
@@ -200,9 +223,10 @@ def main() -> int:
     out_dir = Path("benchmarks")
     out_dir.mkdir(exist_ok=True)
     md = render_md(primary, compare)
-    (out_dir / "01-quickstart-results.md").write_text(md)
+    (out_dir / "01-quickstart-results.md").write_text(md, encoding=TEXT_ENCODING)
     (out_dir / "01-quickstart-results.json").write_text(
-        json.dumps({"primary": primary, "compare": compare}, indent=2)
+        json.dumps({"primary": primary, "compare": compare}, indent=2),
+        encoding=TEXT_ENCODING,
     )
 
     print("\n" + md)

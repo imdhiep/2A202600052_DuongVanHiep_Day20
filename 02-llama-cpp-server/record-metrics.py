@@ -17,6 +17,7 @@ from pathlib import Path
 
 import httpx
 
+TEXT_ENCODING = "utf-8"
 INTERESTING = {
     "llamacpp:n_decode_total",
     "llamacpp:n_busy_slots_per_decode",
@@ -31,10 +32,10 @@ INTERESTING = {
 LINE = re.compile(r"^([a-z_:]+)(?:\{[^}]*\})?\s+([0-9eE.+-]+)$")
 
 
-def scrape(url: str) -> dict[str, float]:
+def scrape(client: httpx.Client, url: str) -> dict[str, float]:
     out: dict[str, float] = {}
     try:
-        text = httpx.get(url, timeout=3.0).text
+        text = client.get(url, timeout=3.0).text
     except httpx.HTTPError:
         return out
     for raw in text.splitlines():
@@ -63,31 +64,37 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    deadline = time.time() + args.duration
+    if args.duration <= 0 or args.interval <= 0:
+        print("ERROR: --duration and --interval must both be > 0.", file=sys.stderr)
+        return 1
+
+    started = time.monotonic()
+    deadline = started + args.duration
     rows: list[dict] = []
     print(f"==> Recording {args.url} for {args.duration}s, every {args.interval}s")
-    while time.time() < deadline:
-        sample = scrape(args.url)
-        if sample:
-            sample["t"] = round(time.time(), 1)
-            rows.append(sample)
-            print(
-                f"   t={sample['t']:.0f}  "
-                f"reqs_proc={sample.get('llamacpp:requests_processing', 0):.0f}  "
-                f"deferred={sample.get('llamacpp:requests_deferred', 0):.0f}  "
-                f"kv_ratio={sample.get('llamacpp:kv_cache_usage_ratio', 0):.2f}  "
-                f"tok_pred={sample.get('llamacpp:tokens_predicted_total', 0):.0f}"
-            )
-        else:
-            print("   (scrape failed — is llama-server running with --metrics?)")
-        time.sleep(args.interval)
+    with httpx.Client() as client:
+        while time.monotonic() < deadline:
+            sample = scrape(client, args.url)
+            if sample:
+                sample["elapsed_s"] = round(time.monotonic() - started, 1)
+                rows.append(sample)
+                print(
+                    f"   t={sample['elapsed_s']:5.1f}s  "
+                    f"reqs_proc={sample.get('llamacpp:requests_processing', 0):.0f}  "
+                    f"deferred={sample.get('llamacpp:requests_deferred', 0):.0f}  "
+                    f"kv_ratio={sample.get('llamacpp:kv_cache_usage_ratio', 0):.2f}  "
+                    f"tok_pred={sample.get('llamacpp:tokens_predicted_total', 0):.0f}"
+                )
+            else:
+                print("   (scrape failed — is llama-server running with --metrics?)")
+            time.sleep(args.interval)
 
     if not rows:
         print("ERROR: no samples collected.", file=sys.stderr)
         return 1
 
     fieldnames = sorted({k for r in rows for k in r.keys()})
-    with out_path.open("w", newline="") as f:
+    with out_path.open("w", newline="", encoding=TEXT_ENCODING) as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:

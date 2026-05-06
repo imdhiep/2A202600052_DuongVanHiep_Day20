@@ -7,7 +7,7 @@ numpy>=1.26.0
 requests>=2.32.0
 
 # Benchmarking / load testing
-locust>=2.30.0          # 02-vllm-serving load test
+locust>=2.30.0          # 02-llama-cpp-server load test
 httpx>=0.27.0           # async client for benchmarks
 tabulate>=0.9.0         # pretty-print results tables
 

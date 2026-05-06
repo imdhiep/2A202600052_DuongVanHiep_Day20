@@ -15,15 +15,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+TEXT_ENCODING = "utf-8"
+
 
 def run(cmd: list[str], timeout: int = 5) -> tuple[int, str]:
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding=TEXT_ENCODING,
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return 127, ""
+
+
+def parse_key_value_output(output: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
 
 
 def detect_cpu() -> dict:
@@ -37,7 +55,7 @@ def detect_cpu() -> dict:
         info["apple_silicon"] = info["arch"] in ("arm64", "aarch64")
     elif sys_plat.startswith("linux"):
         try:
-            cpuinfo = Path("/proc/cpuinfo").read_text()
+            cpuinfo = Path("/proc/cpuinfo").read_text(encoding=TEXT_ENCODING)
             for line in cpuinfo.splitlines():
                 if line.startswith("model name"):
                     info["model"] = line.split(":", 1)[1].strip()
@@ -55,12 +73,29 @@ def detect_cpu() -> dict:
     elif sys_plat == "win32":
         rc, out = run(["wmic", "cpu", "get", "Name,NumberOfCores", "/format:value"])
         if rc == 0:
-            for line in out.splitlines():
-                if line.startswith("Name="):
-                    info["model"] = line.split("=", 1)[1].strip()
-                elif line.startswith("NumberOfCores="):
-                    val = line.split("=", 1)[1].strip()
-                    info["cores_physical"] = int(val) if val.isdigit() else None
+            parsed = parse_key_value_output(out)
+            info["model"] = parsed.get("Name", "unknown")
+            val = parsed.get("NumberOfCores", "")
+            info["cores_physical"] = int(val) if val.isdigit() else None
+        else:
+            rc, out = run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Processor | "
+                    "Select-Object -First 1 Name,NumberOfCores | "
+                    "ConvertTo-Json -Compress",
+                ]
+            )
+            if rc == 0 and out.strip():
+                try:
+                    parsed = json.loads(out.strip())
+                    info["model"] = parsed.get("Name", "unknown")
+                    cores = parsed.get("NumberOfCores")
+                    info["cores_physical"] = int(cores) if cores else None
+                except json.JSONDecodeError:
+                    pass
     info.setdefault("model", "unknown")
     info.setdefault("cores_physical", info["cores_logical"])
     return info
@@ -73,7 +108,7 @@ def detect_ram_gb() -> float:
         return round(int(out.strip()) / 1024**3, 1) if rc == 0 and out.strip().isdigit() else 0.0
     if sys_plat.startswith("linux"):
         try:
-            for line in Path("/proc/meminfo").read_text().splitlines():
+            for line in Path("/proc/meminfo").read_text(encoding=TEXT_ENCODING).splitlines():
                 if line.startswith("MemTotal:"):
                     kb = int(line.split()[1])
                     return round(kb / 1024**2, 1)
@@ -81,11 +116,22 @@ def detect_ram_gb() -> float:
             return 0.0
     if sys_plat == "win32":
         rc, out = run(["wmic", "computersystem", "get", "TotalPhysicalMemory", "/format:value"])
-        for line in out.splitlines():
-            if line.startswith("TotalPhysicalMemory="):
-                val = line.split("=", 1)[1].strip()
-                if val.isdigit():
-                    return round(int(val) / 1024**3, 1)
+        parsed = parse_key_value_output(out)
+        val = parsed.get("TotalPhysicalMemory", "")
+        if val.isdigit():
+            return round(int(val) / 1024**3, 1)
+
+        rc, out = run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+            ]
+        )
+        val = out.strip()
+        if rc == 0 and val.isdigit():
+            return round(int(val) / 1024**3, 1)
     return 0.0
 
 
@@ -119,7 +165,7 @@ def detect_gpu() -> dict:
     for tool in ("vulkaninfo", "vulkaninfoSDK"):
         if shutil.which(tool):
             rc, out = run([tool, "--summary"], timeout=8)
-            if rc == 0 and "deviceName" in out.lower():
+            if rc == 0 and "devicename" in out.lower():
                 backends["vulkan"] = True
                 details["vulkan"] = "device present"
                 break
@@ -231,7 +277,7 @@ def main() -> int:
         "docker": docker,
         "recommendation": rec,
     }
-    Path("hardware.json").write_text(json.dumps(out, indent=2))
+    Path("hardware.json").write_text(json.dumps(out, indent=2), encoding=TEXT_ENCODING)
     print("\nSaved hardware.json — other lab scripts will read this.")
     return 0
 

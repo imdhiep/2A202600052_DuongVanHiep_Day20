@@ -40,6 +40,7 @@ MLX_TIER = {
     "Llama-3.2-3B-Instruct": "mlx-community/Llama-3.2-3B-Instruct-4bit",
     "Qwen2.5-7B-Instruct": "mlx-community/Qwen2.5-7B-Instruct-4bit",
 }
+TEXT_ENCODING = "utf-8"
 
 
 def quantile(xs: list[float], q: float) -> float:
@@ -110,7 +111,7 @@ def bench_mlx(repo_id: str) -> dict:
 
 
 def main() -> int:
-    active = json.loads(Path("models/active.json").read_text())
+    active = json.loads(Path("models/active.json").read_text(encoding=TEXT_ENCODING))
     tier = active["tier"]
     if tier not in MLX_TIER:
         print(f"No MLX repo mapped for tier {tier}. Edit MLX_TIER in this script.", file=sys.stderr)
@@ -137,7 +138,7 @@ def main() -> int:
     )
     out = Path("benchmarks/bonus-mlx-vs-llama-cpp.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(md)
+    out.write_text(md, encoding=TEXT_ENCODING)
     print(md)
     return 0
 

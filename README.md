@@ -1,18 +1,23 @@
-# Day 20 Lab — Model Serving & Inference Optimization (Track 2)
+# Day 20 Lab - Model Serving & Inference Optimization (Track 2)
 
-Lab cho **AICB-P2T2 · Ngày 20 · Model Serving & Inference Optimization**.
-Build + tune một inference stack với llama.cpp trên laptop cá nhân của bạn, đo TTFT / TPOT / P50 / P95 / P99, và viết personal report về một thay đổi tối ưu mang lại speedup lớn nhất.
+Lab này tập trung vào một mục tiêu rõ ràng: dựng, đo và tối ưu một stack suy luận cục bộ với `llama.cpp`, sau đó giải thích kết quả bằng tư duy hệ thống thay vì chỉ ghi lại con số. Repo được thiết kế để chạy trên laptop cá nhân, không yêu cầu Docker, và giữ cùng một bề mặt kỹ thuật trên Windows, Linux, macOS.
 
-> **Lab này dành cho laptop cá nhân của bạn.** Mỗi học viên chạy lab trên máy mình, với spec của mình. Số liệu của bạn **không so sánh được** với bạn cùng lớp — chỉ so sánh **before vs after trên chính máy bạn**. Grade rubric tính độ rõ ràng của setup + tuning + writeup, **không** phải tốc độ tuyệt đối. Một bạn dùng laptop Air M1 8 GB và một bạn dùng workstation RTX 4090 cùng có thể đạt điểm tối đa nếu cả hai đều rubric đầy đủ + writeup mạch lạc.
+## Mục tiêu học tập
 
-> **One runtime, every laptop.** Lab dùng **llama.cpp** end-to-end — chạy trên Windows, macOS (Intel + Apple Silicon), Linux, có hoặc không GPU. Cùng model file, cùng metrics, không cần Docker. Tại sao không vLLM/SGLang? Những engine đó cần CUDA GPU + 16+ GB VRAM — phù hợp slide deck, không phù hợp lớp 30 laptop hỗn hợp. llama.cpp cho bạn cùng teaching surface (GGUF quantization, paged KV cache, continuous batching, OpenAI-compat API, Prometheus metrics) trên bất cứ phần cứng nào bạn có.
+- Đo đúng các chỉ số quan trọng của suy luận: `TTFT`, `TPOT`, `P50/P95/P99`, goodput dưới ràng buộc SLO.
+- So sánh tác động của quantization, số luồng, context length, batching và GPU offload trên chính phần cứng đang có.
+- Dựng được endpoint OpenAI-compatible bằng `llama-server`, gắn thêm quan sát qua `/metrics`, rồi tích hợp endpoint đó vào một pipeline RAG tối thiểu.
+- Viết một báo cáo cá nhân có lập luận: thay đổi nào đem lại hiệu quả lớn nhất, vì sao nó hiệu quả, và giới hạn của kết quả là gì.
 
-## Trước khi bắt đầu
+## Yêu cầu môi trường
 
-1. Mở **[`rubric.md`](rubric.md)** — biết trước grader chấm gì để bạn tập trung đúng chỗ.
-2. Mở **[`HARDWARE-GUIDE.md`](HARDWARE-GUIDE.md)** — xác định path nào phù hợp với laptop bạn.
-
----
+- Python `>= 3.10`
+- Không cần Docker
+- Không cần OpenAI API key
+- Repo phù hợp với:
+  - Windows
+  - macOS Intel / Apple Silicon
+  - Linux
 
 ## Quick Start
 
@@ -20,221 +25,78 @@ Build + tune một inference stack với llama.cpp trên laptop cá nhân của 
 git clone https://github.com/<your-username>/Day20-Track2-ModelServing-Lab.git
 cd Day20-Track2-ModelServing-Lab
 
-make probe          # Probe hardware → hardware.json
-make setup          # Auto-detect OS + install + download model (~5–15 min)
-make bench          # Track 01 — TTFT/TPOT/P95 baseline
-make serve &        # Track 02 — llama-server on :8080 (background)
-make load-10        # Track 02 — locust 10 users, 1 min
-make load-50        # Track 02 — locust 50 users, 1 min
-make pipeline       # Track 03 — RAG → llama-server pipeline
-make verify         # Sanity-check submission readiness
+make probe
+make setup
+make bench
+make serve
+make smoke
+make load-10
+make load-50
+make metrics
+make pipeline
+make verify
 ```
 
-**Yêu cầu:** Python ≥ 3.10. Không cần Docker. Không cần OpenAI key.
+Windows nên dùng `pwsh -ExecutionPolicy Bypass -File 00-setup/windows-setup.ps1`, sau đó gọi từng script Python/PowerShell tương ứng.
 
-**Windows:** `make` không native — chạy `pwsh -ExecutionPolicy Bypass -File 00-setup/windows-setup.ps1` rồi gọi từng script Python trực tiếp. Mọi script Python đều chạy trên Windows.
+## Cấu trúc bài lab
 
-### Tất cả lệnh `make`
-
-```
-make probe          Probe hardware → hardware.json
-make setup          Install deps + build llama-cpp-python + download model
-make bench          Track 01 — TTFT/TPOT baseline + Q4_K_M vs Q2_K
-make serve          Track 02 — llama-server on :8080 (foreground)
-make smoke          Track 02 — smoke-test the running server
-make load-10        Track 02 — locust 10 users, 1 min
-make load-50        Track 02 — locust 50 users, 1 min
-make metrics        Track 02 — record /metrics for 60s
-make pipeline       Track 03 — RAG → llama-server pipeline
-make build-llama    Bonus — clone + build llama.cpp from source
-make sweep-thread   Bonus — sweep -t (thread count)
-make sweep-quant    Bonus — sweep GGUF quantizations
-make sweep-ctx      Bonus — sweep context length
-make sweep-batch    Bonus — sweep batch sizes
-make sweep-gpu      Bonus — sweep GPU offload (CUDA/Metal/Vulkan/ROCm)
-make mlx-compare    Bonus (Apple Silicon) — MLX vs llama.cpp Metal
-make verify         Pre-submission sanity check (run before push!)
-make clean          Wipe generated artifacts (keep models, REFLECTION, screenshots)
-```
-
----
-
-## Track map
-
-| Path | When to take it | Time |
+| Track | Thư mục | Mục tiêu |
 |---|---|---|
-| **00-setup** | Always — detect hardware, install platform-specific tooling | 20 min |
-| **01-llama-cpp-quickstart** | Everyone — Python library benchmark | 30 min |
-| **02-llama-cpp-server** | Everyone — OpenAI-compat HTTP API + observability + load test | 60 min |
-| **03-milestone-integration** | M1 deliverable — connect to N16–N19 | 30 min |
-| **BONUS-llama-cpp-optimization** | Optional, deeper. Weaker laptops benefit *more* | 60–120 min |
-| **BONUS-mlx-macos** | Optional, Apple Silicon only | 30 min |
+| 00 | `00-setup/` | Phát hiện phần cứng, chọn backend, tải model phù hợp |
+| 01 | `01-llama-cpp-quickstart/` | Benchmark baseline cho `TTFT/TPOT/P95` và so sánh quantization |
+| 02 | `02-llama-cpp-server/` | Chạy `llama-server`, load test, Prometheus metrics |
+| 03 | `03-milestone-integration/` | Gắn endpoint vào pipeline RAG tối thiểu |
+| Bonus | `BONUS-llama-cpp-optimization/` | Build source + sweep các knob tối ưu |
+| Bonus | `BONUS-mlx-macos/` | So sánh MLX với llama.cpp trên Apple Silicon |
 
-Total core path: ~2.5 giờ. Bonus tracks thêm 1–3 giờ.
+## Luồng làm việc khuyến nghị
 
----
+1. Chạy `00-setup/detect-hardware.py` để sinh `hardware.json`.
+2. Tải model phù hợp bằng `00-setup/download-model.py`, sinh `models/active.json`.
+3. Benchmark baseline tại `01-llama-cpp-quickstart/benchmark.py`.
+4. Khởi động server ở Track 02.
+   - Script launcher hiện ưu tiên native `llama-server` nếu binary đã được build.
+   - Nếu chưa có binary native, launcher sẽ fallback sang `python -m llama_cpp.server`.
+5. Chạy load test với `locust`, scrape `/metrics`, rồi tổng hợp kết quả.
+6. Tích hợp server vào `03-milestone-integration/pipeline.py`.
+7. Hoàn thiện báo cáo tại `submission/REFLECTION.md`.
 
-## Slide → Track mapping
+## Tài liệu quan trọng nên đọc trước
 
-Mỗi track tương ứng với một phần của deck Day 20. Pass condition lấy từ `rubric.md`.
+- [`rubric.md`](rubric.md): tiêu chí chấm điểm
+- [`HARDWARE-GUIDE.md`](HARDWARE-GUIDE.md): chọn model/backend theo phần cứng
+- [`VIBE-CODING.md`](VIBE-CODING.md): gợi ý workflow ra quyết định và review
 
-| Slide section (Day 20 deck) | Lab track | Skill | Pass when |
-|---|---|---|---|
-| §0 Latency Taxonomy (TTFT/TPOT/Goodput) | 01-quickstart | Đo TTFT/TPOT/P95 trên laptop của mình | Có bảng P50/P95/P99 cho 2 quantizations |
-| §1 Quantization (FP8/AWQ/GGUF/NVFP4) | 01-quickstart + bonus quant-sweep | So sánh Q2_K → Q8_0, RAM vs latency | Side-by-side numbers committed |
-| §2 KV Cache & PagedAttention | 02-server (`--cache-type-k/-v`, `--parallel`) | Quan sát KV cache usage dưới load | Peak `kv_cache_usage_ratio` reported |
-| §3 Single-Node Serving (vLLM, SGLang, llama.cpp) | 02-server (llama-server) | Stand up OpenAI-compat HTTP server | locust 10 + 50 user runs committed |
-| §3 Production Tuning (memory, scheduling, observability) | 02-server tuning + bonus thread-sweep | Đo P95 thay đổi khi tune `--parallel`, `-t`, `--ctx-size` | Sweep table + reflection paragraph |
-| §3 Backend Selection (FA3/FA4/FlashInfer) | bonus build-from-source + gpu-offload | Build llama.cpp với backend đúng cho phần cứng | `bin/llama-bench --version` chạy + speedup quantified |
-| §4 Distributed (TP/PP/EP/DP) | (concept-only — out of scope cho lab này) | — | — |
-| §5 Auto-scaling | (concept-only) | — | — |
-| §6 Edge & Hardware | bonus quant-sweep + 03-integration | Pick model tier theo RAM | Recommended tier khớp với hardware.json |
-| §7 Production SLA (Goodput@SLO) | submission/REFLECTION.md | Set SLO target và đo gap | "Single change that mattered most" paragraph |
+## Kết quả và artefact chính
 
----
+- `hardware.json`: hồ sơ phần cứng
+- `models/active.json`: model đang dùng
+- `benchmarks/01-quickstart-results.md`: baseline quickstart
+- `benchmarks/02-server-metrics.csv`: dữ liệu metrics Track 02
+- `02-llama-cpp-server/02-server-results.md`: phân tích kết quả load test
+- `submission/REFLECTION.md`: báo cáo cá nhân chính để chấm điểm
 
-## Hardware guide
+## Những điều grader thường nhìn
 
-Xem [`HARDWARE-GUIDE.md`](HARDWARE-GUIDE.md) cho:
-- Bảng chọn model theo RAM (TinyLlama-1.1B → Qwen2.5-7B)
-- Bảng llama.cpp backend theo accelerator (CUDA / Metal / Vulkan / ROCm / CPU)
-- Decision tree cho laptop của bạn
+- Repo có tái lập được luồng `setup -> bench -> verify` hay không
+- Số liệu có gắn với phần cứng thực tế và được giải thích hợp lý hay không
+- Báo cáo có phân biệt rõ `TTFT`, `TPOT`, `tail latency`, `goodput`, `KV-cache pressure` hay không
+- Phần "single change that mattered most" có nêu được cơ chế tác động, thay vì chỉ nói nhanh hơn/chậm hơn
 
----
+## Gợi ý để đạt điểm cao
 
-## Vibe-coding tips
-
-Day 19 đã dạy bạn **vibe-coding** dạng general — bạn ép spec rõ, prompt LLM
-viết boilerplate, review diff, accept hoặc rollback. Tốt cho greenfield code.
-
-Day 20 giới thiệu **BMAD method** (Breakthrough Method for Agile AI-Driven
-Development) — structured persona prompting cho task decision-driven, không
-chỉ "viết code". Xem [`VIBE-CODING.md`](VIBE-CODING.md) (5–10 phút) — general
-primer cover:
-
-- BMAD vs vibe-coding (Day 19) — khi nào dùng cái nào
-- 5 personas chính: PM/Spec, Architect, Developer, QA/Verify, Ops/Reflect
-- Prompt template cho mỗi persona
-- "Fail-soft vs fail-loud" rule (vẫn từ Day 19, BMAD's QA persona là chỗ đánh nó)
-- 3 anti-patterns (skip PM, skip QA, BMAD-as-bureaucracy)
-
----
-
-## Bonus tracks (optional, +20 pts)
-
-> **Laptop yếu lại là lợi thế ở đây.** Bonus track lột bỏ abstraction: bạn build llama.cpp từ source với CPU-instruction-set flags đúng, sweep thread count, sweep quantization, sweep context length, sweep GPU offload — và đo speedup *trên chính máy bạn*. Một laptop M1 Air 8 GB hay một workstation RTX 4090 đều có thể tăng tốc 2–4× sau bonus track. Cái khác nhau chỉ là **knob nào quan trọng** trên hardware nào — và đó là phần grader thưởng điểm.
-
-### Track A — `BONUS-llama-cpp-optimization/` (~60–120 phút)
-
-Build llama.cpp từ source và đo cái gì matters trên *your* hardware.
-
-**Setup:**
-
-```bash
-make build-llama       # clone + cmake + build cho backend phù hợp
-                       # (CUDA / Metal / Vulkan / ROCm / CPU — auto từ hardware.json)
-```
-
-**5 sweep scripts** — chọn cái phù hợp với laptop của bạn (đừng chạy hết, chọn 1–2 cái nói lên nhiều nhất):
-
-| `make` target | Script | Khi nào dùng | Insight |
-|---|---|---|---|
-| `make sweep-thread` | `thread-sweep.py` | **CPU-only laptop** — dễ thấy curve nhất | Curve tokens/s thường peak ở physical-core count rồi *drop* khi chạy vào hyperthreads — memory-bandwidth ceiling. |
-| `make sweep-quant` | `quant-sweep.py` | **Tight RAM** | So sánh Q2_K → Q4_K_M → Q5_K_M → Q6_K → Q8_0: file size vs decode tok/s vs quality. |
-| `make sweep-ctx` | `ctx-len-sweep.py` | **Long-context workload** (RAG, document QA) | Prefill scales ~O(N²) — đây là TTFT trong long-context. Chính là motivation cho disaggregated P/D ở deck §3. |
-| `make sweep-batch` | `batch-size-sweep.py` | **Server với multiple slots** | `--batch-size` / `--ubatch-size` = chunked prefill — đánh đổi throughput vs TTFT. |
-| `make sweep-gpu` | `gpu-offload-sweep.py` | **Có GPU** (CUDA / Metal / Vulkan / ROCm) | `-ngl 0,8,16,...,99` — khi nào partial offload thắng full offload (model không fit VRAM). |
-
-**7 open challenges** in [`BONUS-llama-cpp-optimization/CHALLENGES.md`](BONUS-llama-cpp-optimization/CHALLENGES.md) — pick **một** cái để go deep:
-
-- **C1** Speculative decoding (`--draft-model` + small draft + larger target)
-- **C2** KV-cache quantization (`--cache-type-k q8_0 --cache-type-v q8_0`) — quality vs RAM tradeoff
-- **C3** Multi-LoRA serving (`--lora` repeated, per-request adapter switching)
-- **C4** Best-of-N parallel sampling + reranker
-- **C5** "Weakest laptop" challenge — tìm model nhỏ nhất *vẫn useful* trên hardware bạn
-- **C6** Vulkan vs CUDA head-to-head trên cùng một NVIDIA GPU
-- **C7** CPU instruction-set archaeology (`-DGGML_NATIVE=ON` vs OFF, AVX2 vs AVX-512)
-
-### Track B — `BONUS-mlx-macos/` (~30 phút, Apple Silicon only)
-
-So sánh MLX (Apple's unified-memory ML framework) với llama.cpp Metal trên cùng 10 prompts. Trên M1/M2/M3/M4, MLX thường nhanh hơn 1.3–1.8× ở decode — đo trên máy bạn để confirm.
-
-```bash
-pip install mlx mlx-lm
-make mlx-compare
-```
-
-### Cách viết bonus writeup
-
-Trong `submission/REFLECTION.md` §5 ("The single change that mattered most"), pick **một** thay đổi từ bonus track:
-
-```
-Change: <vd: rebuild llama.cpp với -DGGML_NATIVE=ON -DGGML_BLAS=ON>
-Before: <số liệu>
-After:  <số liệu>
-Speedup: ~<X.Y>×
-Tại sao nó work (1–2 đoạn): <giải thích bằng mental model về memory bandwidth /
-                             cache / compute, không phải "vibes-based">
-```
-
-Đừng cố làm hết 5 sweeps + 7 challenges. **Một insight rõ ràng > năm sweeps lủng củng.**
-
-### Bonus pts
-
-- Build llama.cpp từ source thành công (any backend): **4 pts**
-- Ít nhất 1 sweep với `benchmarks/bonus-*.md` committed: **4 pts**
-- Bonus speedup quantified với before/after numbers: **4 pts**
-- Ít nhất 1 challenge từ CHALLENGES.md attempted: **4 pts**
-- MLX comparison run (Apple Silicon only): **4 pts**
-
-Total **20 pts**. Bonus does **not** affect core grade negatively — missing nó là OK. Strong bonus submission gets a written instructor review focused on judgment quality, not raw numbers. Đầy đủ trong [`rubric.md`](rubric.md).
-
----
+- Ghi rõ cấu hình chạy: model, quantization, số luồng, context size, GPU offload.
+- Khi so sánh trước/sau, luôn giữ nguyên workload để kết luận có giá trị.
+- Nếu có giới hạn hoặc phần còn stub, nêu thẳng và giải thích vì sao. Sự trung thực kỹ thuật thường thuyết phục hơn việc "làm đầy" bằng mô tả mơ hồ.
+- Ưu tiên một hoặc hai insight mạnh, thay vì rất nhiều bảng số liệu không có kết luận.
 
 ## Submission
 
-**KHÔNG cần PR — chỉ submit GitHub URL công khai vào VinUni LMS.**
+1. Hoàn thành bốn track chính.
+2. Commit đầy đủ artefact và screenshot trong `submission/screenshots/`.
+3. Hoàn thiện `submission/REFLECTION.md`.
+4. Chạy `make verify`.
+5. Đẩy repo public lên GitHub và nộp URL trên LMS.
 
-1. Fork hoặc copy repo này lên GitHub account của bạn, set repo **public**.
-2. Hoàn thành 4 core tracks (`00-setup` → `01-quickstart` → `02-server` → `03-integration`).
-3. Add screenshots vào `submission/screenshots/` — xem danh sách trong [`submission/screenshots/README.md`](submission/screenshots/README.md).
-4. Điền **`submission/REFLECTION.md`** — đây là personal report grader đọc kỹ nhất.
-5. Chạy `make verify` ở repo root — đảm bảo exit code 0.
-6. Push lên public repo.
-7. Paste public GitHub URL vào ô submission của Day 20 trong VinUni LMS.
-
-**Quan trọng:** Repo phải **public** đến khi điểm được công bố. Nếu private, grader không xem được → 0 điểm.
-
-Đầy đủ pass conditions + bonus pts xem [`rubric.md`](rubric.md).
-
----
-
-## Repo structure
-
-```
-Day20-Track2-ModelServing-Lab/
-├── README.md                          ← this file
-├── HARDWARE-GUIDE.md                  ← model + backend pick chart
-├── VIBE-CODING.md                     ← BMAD method intro (5–10 min pre-read)
-├── rubric.md                          ← 100-pt core + 20-pt bonus
-├── Makefile                           ← `make probe / setup / bench / serve / verify / ...`
-├── pyproject.toml + requirements.txt  ← Python deps
-├── .env.example                       ← tunable knobs
-├── 00-setup/                          ← detect-hardware + platform setup scripts
-├── 01-llama-cpp-quickstart/           ← Track 01 baseline
-├── 02-llama-cpp-server/               ← Track 02 OpenAI-compat + locust + Prometheus
-├── 03-milestone-integration/          ← Track 03 RAG pipeline skeleton
-├── BONUS-llama-cpp-optimization/      ← source build + 5 sweeps + 7 challenges
-├── BONUS-mlx-macos/                   ← Apple Silicon MLX comparison
-├── benchmarks/                        ← (generated) results files
-├── scripts/verify.py                  ← pre-submission sanity check
-└── submission/                        ← personal report + screenshots (you fill these in)
-    ├── REFLECTION.md
-    └── screenshots/
-```
-
----
-
-## Why this lab matters
-
-Day 20 deck argues **goodput@SLO** (không phải peak throughput) là production metric. Lab này là chỗ bạn đo cả hai trên laptop của mình, thấy gap, và tune gap đó nhỏ lại. Bonus track lột bỏ abstraction: bạn build llama.cpp từ source, chọn CPU instructions, và xem một model 1B parameters tăng tốc 2–4× mà không cần đổi model. Intuition đó áp dụng được cho mọi serving engine trong deck.
+Repo này được tối ưu cho việc học và giải thích nguyên lý tối ưu serving trên máy cá nhân. Điểm mạnh của nó không nằm ở "số nhanh tuyệt đối", mà ở chỗ cho phép thấy rõ mối quan hệ giữa phần cứng, runtime, và độ trễ đầu-cuối trong một môi trường dễ tái lập.
